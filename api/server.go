@@ -70,7 +70,7 @@ func (s *Server) handleAddSniffDomain(w http.ResponseWriter, r *http.Request) {
 		s.config.AddSniffDomain(req.Domain)
 		log.Printf("Added domain to sniff: %s", req.Domain)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf("Domain %s added to sniff list", req.Domain)))
+		_, _ = w.Write([]byte(fmt.Sprintf("Domain %s added to sniff list", req.Domain)))
 	} else {
 		http.Error(w, "Domain cannot be empty", http.StatusBadRequest)
 	}
@@ -173,11 +173,10 @@ func (s *Server) handleGetStreamResponse(w http.ResponseWriter, r *http.Request)
 		select {
 		case <-ticker.C:
 			// 从Proxy的forwarders中获取数据
-			_, data, errGetForwarderData := s.proxy.GetForwarderData(sapisid)
+			_, data, toolCallsData, errGetForwarderData := s.proxy.GetForwarderData(sapisid)
 			if errGetForwarderData != nil {
 				if errGetForwarderData.Error() == "done" {
-					s.handleDataWrite(w, &startResoning, chatCmplId, timestamp, data, true)
-
+					s.handleDataWrite(w, &startResoning, chatCmplId, timestamp, data, toolCallsData, true)
 					_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 					processingCount = 0
 					startResoning = false
@@ -194,7 +193,7 @@ func (s *Server) handleGetStreamResponse(w http.ResponseWriter, r *http.Request)
 					processingCount = 0
 				}
 			} else {
-				s.handleDataWrite(w, &startResoning, chatCmplId, timestamp, data, false)
+				s.handleDataWrite(w, &startResoning, chatCmplId, timestamp, data, toolCallsData, false)
 				processingCount = 0
 			}
 			flusher.Flush()
@@ -205,7 +204,7 @@ func (s *Server) handleGetStreamResponse(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, chatCmplId string, timestamp int64, data []byte, done bool) {
+func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, chatCmplId string, timestamp int64, data []byte, toolCallsData []byte, done bool) {
 	// 如果有数据，发送数据
 	thinkStartIndex := bytes.Index(data, []byte("<think>"))
 	thinkEndIndex := bytes.Index(data, []byte("</think>"))
@@ -218,6 +217,10 @@ func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, cha
 		jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.reasoning_content", string(data[thinkStartIndex+7:]))
 		jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.content", "")
 		if done {
+			if toolCallsData != nil {
+				toolCalls, _ := sjson.SetBytes(toolCallsData, "0.id", fmt.Sprintf("call_%s", generateRandomString(22)))
+				jsonStr, _ = sjson.SetRaw(jsonStr, "choices.0.delta.tool_calls", string(toolCalls))
+			}
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.finish_reason", "stop")
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.native_finish_reason", "stop")
 		}
@@ -241,6 +244,10 @@ func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, cha
 			jsonStr, _ = sjson.Set(jsonStr, "created", timestamp)
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.content", string(body))
 			if done {
+				if toolCallsData != nil {
+					toolCalls, _ := sjson.SetBytes(toolCallsData, "0.id", fmt.Sprintf("call_%s", generateRandomString(22)))
+					jsonStr, _ = sjson.SetRaw(jsonStr, "choices.0.delta.tool_calls", string(toolCalls))
+				}
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.finish_reason", "stop")
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.native_finish_reason", "stop")
 			}
@@ -265,6 +272,10 @@ func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, cha
 			jsonStr, _ = sjson.Set(jsonStr, "created", timestamp)
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.content", string(body))
 			if done {
+				if toolCallsData != nil {
+					toolCalls, _ := sjson.SetBytes(toolCallsData, "0.id", fmt.Sprintf("call_%s", generateRandomString(22)))
+					jsonStr, _ = sjson.SetRaw(jsonStr, "choices.0.delta.tool_calls", string(toolCalls))
+				}
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.finish_reason", "stop")
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.native_finish_reason", "stop")
 			}
@@ -279,6 +290,10 @@ func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, cha
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.reasoning_content", string(data))
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.content", "")
 			if done {
+				if toolCallsData != nil {
+					toolCalls, _ := sjson.SetBytes(toolCallsData, "0.id", fmt.Sprintf("call_%s", generateRandomString(22)))
+					jsonStr, _ = sjson.SetRaw(jsonStr, "choices.0.delta.tool_calls", string(toolCalls))
+				}
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.finish_reason", "stop")
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.native_finish_reason", "stop")
 			}
@@ -290,6 +305,10 @@ func (s *Server) handleDataWrite(w http.ResponseWriter, startResoning *bool, cha
 			jsonStr, _ = sjson.Set(jsonStr, "created", timestamp)
 			jsonStr, _ = sjson.Set(jsonStr, "choices.0.delta.content", string(data))
 			if done {
+				if toolCallsData != nil {
+					toolCalls, _ := sjson.SetBytes(toolCallsData, "0.id", fmt.Sprintf("call_%s", generateRandomString(22)))
+					jsonStr, _ = sjson.SetRaw(jsonStr, "choices.0.delta.tool_calls", string(toolCalls))
+				}
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.finish_reason", "stop")
 				jsonStr, _ = sjson.Set(jsonStr, "choices.0.native_finish_reason", "stop")
 			}

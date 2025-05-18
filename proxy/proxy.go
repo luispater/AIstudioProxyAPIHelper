@@ -11,6 +11,7 @@ import (
 	"github.com/luispater/AIstudioProxyAPIHelper/config"
 	"github.com/luispater/AIstudioProxyAPIHelper/utils"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"golang.org/x/net/proxy"
 	"io"
 	"log"
@@ -625,10 +626,10 @@ func (p *Proxy) handleSniffHTTPS(w http.ResponseWriter, r *http.Request, host st
 							responseBody = responseBody[lengthCrlfIdx+2+int(length)+2:]
 							if bytes.Contains(responseHeader, []byte("Content-Encoding: gzip")) {
 								dataBuffer = append(dataBuffer, chunkedData...)
-								result, _ := decompressGzip(dataBuffer)
+								result, toolCalls, _ := decompressGzip(dataBuffer)
 								if result != nil {
 									if len(result) > lastOutputPos {
-										p.toForwarder(sapisid, result, lastOutputPos, false)
+										p.toForwarder(sapisid, result, toolCalls, lastOutputPos, false)
 										lastOutputPos = len(result)
 									}
 								}
@@ -641,9 +642,9 @@ func (p *Proxy) handleSniffHTTPS(w http.ResponseWriter, r *http.Request, host st
 			}
 		}
 
-		result, _ := decompressGzip(dataBuffer)
+		result, toolCalls, _ := decompressGzip(dataBuffer)
 		if result != nil {
-			p.toForwarder(sapisid, result, lastOutputPos, true)
+			p.toForwarder(sapisid, result, toolCalls, lastOutputPos, true)
 			lastOutputPos = len(result)
 		}
 
@@ -652,7 +653,7 @@ func (p *Proxy) handleSniffHTTPS(w http.ResponseWriter, r *http.Request, host st
 	wg.Wait()
 }
 
-func (p *Proxy) toForwarder(sapisid string, result []byte, lastOutputPos int, done bool) {
+func (p *Proxy) toForwarder(sapisid string, result []byte, toolCalls []byte, lastOutputPos int, done bool) {
 	if _, hasKey := p.forwarders[sapisid]; !hasKey {
 		p.forwarders[sapisid] = NewForwarder()
 	}
@@ -666,22 +667,30 @@ func (p *Proxy) toForwarder(sapisid string, result []byte, lastOutputPos int, do
 	}
 
 	if done {
-		p.forwarders[sapisid].Write([]byte{0, 0, 0, 0})
+		// should be creating a byte array write once
+		data := make([]byte, 0)
+		if toolCalls != nil {
+			// toolcalls
+			data = append(data, []byte{0, 0, 0, 1}...)
+			data = append(data, toolCalls...)
+		}
+		data = append(data, []byte{0, 0, 0, 0}...)
+		p.forwarders[sapisid].Write(data)
 	}
 }
 
-func (p *Proxy) GetForwarderData(sapisid string) (int, []byte, error) {
+func (p *Proxy) GetForwarderData(sapisid string) (int, []byte, []byte, error) {
 	if forwarder, exists := p.forwarders[sapisid]; exists {
 		return forwarder.Read()
 	}
-	return 0, nil, fmt.Errorf("no forwarder")
+	return 0, nil, nil, fmt.Errorf("no forwarder")
 }
 
-func decompressGzip(dataBuffer []byte) ([]byte, error) {
+func decompressGzip(dataBuffer []byte) ([]byte, []byte, error) {
 	buffer := bytes.NewBuffer(dataBuffer)
 	gzReader, errReader := gzip.NewReader(buffer)
 	if errReader != nil {
-		return nil, errReader
+		return nil, nil, errReader
 	}
 	result := make([]byte, 0)
 	for {
@@ -706,6 +715,7 @@ func decompressGzip(dataBuffer []byte) ([]byte, error) {
 
 	think := ""
 	body := ""
+	toolCalls := ""
 	input := string(result)
 	matches := re.FindAllString(input, -1)
 	for _, match := range matches {
@@ -714,6 +724,18 @@ func decompressGzip(dataBuffer []byte) ([]byte, error) {
 			arr := value.Array()
 			if len(arr) == 2 {
 				body = body + arr[1].String()
+			} else if len(arr) == 11 && arr[1].Type == gjson.Null && arr[10].Type == gjson.JSON {
+				if !arr[10].IsArray() {
+					continue
+				}
+				arrayToolCalls := arr[10].Array()
+				funcName := arrayToolCalls[0].String()
+				argumentsStr := arrayToolCalls[1].String()
+				params := parseToolCallParams(argumentsStr)
+
+				toolCallsTemplate := `[{"id":"","index":0,"type":"function","function":{"name":"","arguments":""}}]`
+				toolCalls, _ = sjson.Set(toolCallsTemplate, "0.function.name", funcName)
+				toolCalls, _ = sjson.Set(toolCalls, "0.function.arguments", params)
 			} else if len(arr) > 2 {
 				think = think + arr[1].String()
 			}
@@ -731,5 +753,49 @@ func decompressGzip(dataBuffer []byte) ([]byte, error) {
 			result = []byte("<think>" + think)
 		}
 	}
-	return result, nil
+
+	var byteToolCalls []byte
+	if toolCalls != "" {
+		byteToolCalls = []byte(toolCalls)
+	} else {
+		byteToolCalls = nil
+	}
+
+	return result, byteToolCalls, nil
+}
+
+func parseToolCallParams(argumentsStr string) string {
+	arguments := gjson.Get(argumentsStr, "0")
+	if !arguments.IsArray() {
+		return ""
+	}
+	funcParams := `{}`
+	args := arguments.Array()
+	for i := 0; i < len(args); i++ {
+		if args[i].IsArray() {
+			arg := args[i].String()
+			paramName := gjson.Get(arg, "0")
+			paramValue := gjson.Get(arg, "1")
+			if paramValue.IsArray() {
+				v := paramValue.Array()
+				if len(v) == 1 { // null
+					funcParams, _ = sjson.Set(funcParams, paramName.String(), nil)
+				} else if len(v) == 2 { // number and integer
+					funcParams, _ = sjson.Set(funcParams, paramName.String(), v[1].Value())
+				} else if len(v) == 3 { // string
+					funcParams, _ = sjson.Set(funcParams, paramName.String(), v[2].String())
+				} else if len(v) == 4 { // Boolean
+					funcParams, _ = sjson.Set(funcParams, paramName.String(), v[3].Int() == 1)
+				} else if len(v) == 5 { // object
+					result := parseToolCallParams(v[4].Raw)
+					if result == "" {
+						funcParams, _ = sjson.Set(funcParams, paramName.String(), nil)
+					} else {
+						funcParams, _ = sjson.SetRaw(funcParams, paramName.String(), result)
+					}
+				}
+			}
+		}
+	}
+	return funcParams
 }
