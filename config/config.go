@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"strings"
 	"sync"
 )
@@ -10,8 +9,6 @@ import (
 type Config struct {
 	// List of domains to sniff
 	SniffDomains map[string]bool
-	// Directory for storing records
-	RecordDir string
 	// Proxy server port
 	ProxyPort string
 	// Upstream proxy server URL (http://user:pass@host:port, socks5://user:pass@host:port, etc.)
@@ -29,7 +26,6 @@ func GetConfig() *Config {
 	once.Do(func() {
 		globalConfig = &Config{
 			SniffDomains:   make(map[string]bool),
-			RecordDir:      "record",
 			ProxyPort:      "3120",
 			ProxyServerURL: "",
 		}
@@ -41,10 +37,6 @@ func GetConfig() *Config {
 
 // Initialize default configuration
 func (c *Config) initDefaultConfig() {
-	// Ensure record directory exists
-	if _, err := os.Stat(c.RecordDir); os.IsNotExist(err) {
-		_ = os.MkdirAll(c.RecordDir, 0755)
-	}
 }
 
 // AddSniffDomain adds a domain to the sniff list
